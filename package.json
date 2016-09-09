@@ -1,0 +1,27 @@
+{
+  "name": "breakpoint.js",
+  "version": "0.0.1",
+  "description": "breakpoint debugger for JavaScript",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seasonhuang/breakpoint.js.git"
+  },
+  "keywords": [
+    "breakpoint",
+    "debugger",
+    "continuations"
+  ],
+  "author": "season huang",
+  "license": "BSD",
+  "bugs": {
+    "url": "https://github.com/seasonhuang/breakpoint.js/issues"
+  },
+  "homepage": "https://github.com/seasonhuang/breakpoint.js#readme",
+  "dependencies": {
+    "unwinder": "https://github.com/jlongster/unwinder.git"
+  }
+}
