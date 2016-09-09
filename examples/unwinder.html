@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title></title>
+  <script type="text/javascript" src="unwinder.bundle.js"></script>
+</head>
+<body>
+<script type="text/javascript">
+  function log(str) {
+    console.log(str);
+  }
+</script>
+<script type="text/javascript">
+
+  for (var i = 0; i < 10; i++) {
+    debugger;
+    log(i);
+  }
+  // ' '.repeat(10).split('').forEach(function(v, i) {
+  //   debugger;
+  //   window.console.log(i);
+  // })
+
+  // (function() {
+  //   var x = 0;
+  //   var f = function() { window.console.log(x); };
+  //   debugger;
+  //   x ++;
+  //   f();
+  // })();
+
+  // var p = document.createElement('p');
+  // p.innerText = 'This is a p';
+  // debugger;
+  // window.console.log(p);
+  // p.addEventListener('click', function() {
+  //   debugger;
+  //   window.console.log('click p');
+  // });
+  // // 断点时，定时器会先执行了
+  // setTimeout(function() {
+  //   window.console.log('timer')
+  // })
+  // document.body.appendChild(p);
+
+  // window.console.log('start');
+  // debugger;
+  // // eval里不能断点
+  // eval('debugger;alert(/xss/)');
+  // window.console.log('end');
+
+  // console['l' + 'og']('member expression')
+
+  // 函数调用应该先设置next，再调用，不然函数里有断点，出来后堆栈的next不变，死循环
+  // 1. 先设置next
+  // 2. 如果抛出的异常是continuation，则next改到下一步
+  // function Shape(w, h) {
+  //   this.w = w;
+  //   debugger;
+  //   this.h = h;
+  //   return 'w' + 'h';
+  // }
+
+  // var s = Shape(100, 100);
+  // window.console.log(s);
+
+
+
+  // var obj = {
+  //   Shape: function(w, h) {
+  //     this.w = w;
+  //     debugger;
+  //     this.h = h;
+  //   }
+  // };
+
+  // new obj.Shape(100, 100);
+
+
+</script>
+</body>
+</html>
