@@ -1,12 +1,12 @@
 var VM = require('../node_modules/unwinder/runtime/vm');
 
+var manager = window.manager = VM.machineManager;
+
 function transformExternalScript() {}
 
 function transformCode(code) {
-  window.vm = new VM.$Machine();
-  console.time('transform code');
+  var vm = new VM.$Machine(manager);
   vm.loadString(code);
-  console.timeEnd('transform code');
   // TODO: 按顺序执行
   vm.run()
 }

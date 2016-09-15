@@ -11,11 +11,14 @@
   }
 </script>
 <script type="text/javascript">
-
   for (var i = 0; i < 10; i++) {
-    debugger;
-    log(i);
+    eval('debugger; log(i);');
   }
+</script>
+<script type="text/javascript">
+
+  log(i);
+
   // ' '.repeat(10).split('').forEach(function(v, i) {
   //   debugger;
   //   window.console.log(i);
@@ -43,11 +46,6 @@
   // })
   // document.body.appendChild(p);
 
-  // window.console.log('start');
-  // debugger;
-  // // eval里不能断点
-  // eval('debugger;alert(/xss/)');
-  // window.console.log('end');
 
   // console['l' + 'og']('member expression')
 

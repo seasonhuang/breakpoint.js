@@ -46,13 +46,13 @@
 
 	var VM = __webpack_require__(1);
 
+	var manager = window.manager = VM.machineManager;
+
 	function transformExternalScript() {}
 
 	function transformCode(code) {
-	  window.vm = new VM.$Machine();
-	  console.time('transform code');
+	  var vm = new VM.$Machine(manager);
 	  vm.loadString(code);
-	  console.timeEnd('transform code');
 	  // TODO: 按顺序执行
 	  vm.run()
 	}
@@ -105,17 +105,50 @@
 
 	// vm
 
+	var INIT = 'init';
 	var IDLE = 'idle';
 	var SUSPENDED = 'suspended';
 	var EXECUTING = 'executing';
 
-	function Machine() {
+	// manager all machines.
+	// do not execute when some machine suspended, wait
+	var machineManager = {
+	  state: IDLE,
+	  vms: [],
+	  queue: function(vm) {
+	    if (this.vms.indexOf(vm) === -1) {
+	      this.vms.push(vm);
+	    }
+	  },
+	  dequeue: function(vm) {
+	    var vms = this.vms;
+	    var idx = vms.indexOf(vm);
+	    if (idx !== -1) {
+	      vms.splice(idx, 1);
+	    }
+
+	    return;
+	  },
+	  continue: function() {
+	    var vms = this.vms;
+	    if (vms.length) {
+	      if (vms[0].state === SUSPENDED) {
+	        vms[0].continue();
+	      }
+	    }
+	  },
+	  step: function() {},
+	  stepOver: function() {},
+	};
+
+
+	function Machine(manager) {
 	  this.debugInfo = null;
 	  this.stack = null;
 	  this.error = undefined;
 	  this.doRestore = false;
 	  this.evalResult = null;
-	  this.state = IDLE;
+	  this.state = INIT;
 	  this.running = false;
 	  this._events = {};
 	  this.stepping = false;
@@ -123,6 +156,7 @@
 	  this.tryStack = [];
 	  this.machineBreaks = [];
 	  this.machineWatches = [];
+	  this.manager = manager;
 	}
 
 	Machine.prototype.loadScript = function(path) {
@@ -143,7 +177,10 @@
 	};
 
 	Machine.prototype.loadString = function(str) {
+	  console.time('compiler');
 	  var output = compiler(str, { includeDebug: true });
+	  console.timeEnd('compiler');
+
 	  var debugInfo = new DebugInfo(output.debugInfo);
 
 	  this.setDebugInfo(debugInfo);
@@ -151,6 +188,17 @@
 	}
 
 	Machine.prototype.execute = function(fn, thisPtr, args) {
+	  if (
+	    (this.state === INIT && this.manager.vms.length > 0)
+	    || (this.state === SUSPENDED)
+	  ) {
+	    this.state = SUSPENDED;
+	    this.manager.queue(this);
+	    return;
+	  }
+
+	  if (this.state === EXECUTING) return;
+
 	  var prevState = this.state;
 	  this.state = EXECUTING;
 	  this.running = true;
@@ -223,8 +271,8 @@
 	  );
 
 	  this.output = '';
-	  this.execute(rootFn);
 	  this.globalFn = rootFn;
+	  this.execute(rootFn);
 	};
 
 	Machine.prototype.abort = function() {
@@ -249,15 +297,19 @@
 	};
 
 	Machine.prototype.continue = function() {
-	  if(this.state === SUSPENDED) {
+	  var top = this.getTopFrame();
+
+	  if (!top || this.state === INIT) {
+	    this.state = IDLE;
+	    this.execute(this.globalFn);
+	  } else if (this.state === SUSPENDED) {
 	    this.fire('resumed');
 
 	    var root = this.getRootFrame();
-	    var top = this.getTopFrame();
 	    this.running = true;
 	    this.state = EXECUTING;
 
-	    if(this.machineBreaks[top.machineId][top.next]) {
+	    if (this.machineBreaks[top.machineId][top.next]) {
 	      // We need to get past this instruction that has a breakpoint, so
 	      // turn off breakpoints and step past it, then turn them back on
 	      // again and execute normally
@@ -380,26 +432,28 @@
 	    this.running = false;
 	  }
 	  else if(this.globalFn) {
-	    expr = compiler(expr, {
+	    var output = compiler(expr, {
 	      asExpr: true
-	    }).code;
+	    });
+	    expr = output.code;
+	    this.updateDebugInfo(new DebugInfo(output.debugInfo));
 
 	    this.evalArg = expr;
-	    this.stepping = true;
+	    // this.stepping = true;
 
 	    this.withTopFrame({
 	      next: -1,
 	      state: {}
 	    }, function() {
 	      this.doRestore = true;
-	      try {
+	      // try {
 	        (0, this).globalFn();
-	      }
-	      catch(e) {
-	        if(e.error) {
-	          throw e.error;
-	        }
-	      }
+	      // }
+	      // catch(e) {
+	      //   if(e.error) {
+	      //     throw e.error;
+	      //   }
+	      // }
 	      this.doRestore = false;
 	    }.bind(this));
 	  }
@@ -452,12 +506,15 @@
 	    }
 
 	    this.state = SUSPENDED;
+	    this.manager.queue(this);
 	  }
 	  else {
 	    if(!suppressEvents) {
 	      this.fire('finish');
 	    }
 	    this.state = IDLE;
+	    this.manager.dequeue(this);
+	    this.manager.continue();
 	  }
 
 	  this.running = false;
@@ -602,6 +659,15 @@
 	  }
 	  for(var i=0; i<machines.length; i++) {
 	    this.machineWatches[i] = [];
+	  }
+	};
+
+	Machine.prototype.updateDebugInfo = function(info) {
+	  this.debugInfo = info || new DebugInfo([]);
+	  var machines = info.data.machines;
+	  for (var i = 0; i < machines.length; i++) {
+	    if (!this.machineBreaks[i]) this.machineBreaks[i] = [];
+	    if (!this.machineWatches[i]) this.machineWatches[i] = [];
 	  }
 	};
 
@@ -967,6 +1033,7 @@
 	module.exports.$Frame = Frame;
 	module.exports.$DebugInfo = DebugInfo;
 	module.exports.$ContinuationExc = ContinuationExc;
+	module.exports.machineManager = machineManager;
 
 	/* WEBPACK VAR INJECTION */}.call(exports, __webpack_require__(2)))
 
@@ -1116,9 +1183,12 @@
 	var transform = __webpack_require__(22).transform;
 	var utils = __webpack_require__(24);
 	var recast = __webpack_require__(26);
+	var DebugInfo = __webpack_require__(53).DebugInfo;
 	var esprimaHarmony = __webpack_require__(41);
 	var genFunExp = /\bfunction\s*\*/;
 	var blockBindingExp = /\b(let|const)\s+/;
+
+	var debugInfo = new DebugInfo();
 
 	assert.ok(
 	  /harmony/.test(esprimaHarmony.version),
@@ -1146,7 +1216,9 @@
 	      loc: true
 	  };
 
+	  console.time('[recast] parse');
 	  var recastAst = recast.parse(source, recastOptions);
+	  console.timeEnd('[recast] parse');
 	  var ast = recastAst.program;
 
 	  // Transpile let/const into var declarations.
@@ -1164,7 +1236,9 @@
 	    }
 	  }
 
-	  var transformed = transform(ast, options);
+	  console.time('transform')
+	  var transformed = transform(ast, options, debugInfo);
+	  console.timeEnd('transform')
 	  recastAst.program = transformed.ast;
 	  var appendix = '';
 
@@ -1173,8 +1247,12 @@
 	    body.unshift.apply(body, transformed.debugAST);
 	  }
 
+	  console.time('[recast] print');
+	  var res = recast.print(recastAst, recastOptions);
+	  console.timeEnd('[recast] print');
+
 	  return {
-	    code: recast.print(recastAst, recastOptions).code + '\n' + appendix,
+	    code: res.code + '\n' + appendix,
 	    debugInfo: transformed.debugInfo
 	  };
 	}
@@ -5141,13 +5219,11 @@
 	var b = types.builders;
 	var hoist = __webpack_require__(23).hoist;
 	var Emitter = __webpack_require__(25).Emitter;
-	var DebugInfo = __webpack_require__(51).DebugInfo;
-	var escope = __webpack_require__(52);
+	var escope = __webpack_require__(51);
 	var withLoc = __webpack_require__(24).withLoc;
 
-	exports.transform = function(ast, opts) {
+	exports.transform = function(ast, opts, debugInfo) {
 	  n.Program.assert(ast);
-	  var debugInfo = new DebugInfo();
 	  var nodes = ast.body;
 	  var asExpr = opts.asExpr;
 	  var originalExpr = nodes[0];
@@ -5158,6 +5234,7 @@
 	    return acc;
 	  }, []);
 
+	  console.time('[escope] handle boxed variables');
 	  var scopes = escope.analyze(ast).scopes;
 
 	  // Scan the scopes bottom-up by simply reversing the array. We need
@@ -5180,6 +5257,7 @@
 	      }
 
 	      scope.references.forEach(function(r) {
+	        // Is the var where it defined boxed?
 	        var defBoxed = r.resolved && r.resolved.defs.reduce(function(acc, def) {
 	          return acc || def.name.boxed || boxedVars.indexOf(def.name) !== -1;
 	        }, false);
@@ -5195,16 +5273,25 @@
 	            boxedVars.indexOf(r.identifier.name) !== -1) ||
 	           (r.resolved &&
 	            r.resolved.scope.type !== 'catch' &&
+	            // by season
+	            // no the current scope
 	            r.resolved.scope !== from &&
 
 	            // completely ignore references to a named function
 	            // expression, as that binding is immutable (super weird)
+
+	            // by season
+	            // the true type of the var only known at the runtime
+	            // so boxed all of it except function
+	            // because the function type known in the static analyze.
 	            !(r.resolved.defs[0].type === 'FunctionName' &&
 	              r.resolved.defs[0].node.type === 'FunctionExpression'))) {
 
 	          r.identifier.boxed = true;
 
 	          if(r.resolved) {
+	            // by season
+	            // if the refenrence boxed, so does the defination.
 	            r.resolved.defs.forEach(function(def) {
 	              def.name.boxed = true;
 	            });
@@ -5213,6 +5300,7 @@
 	      });
 	    }
 	  });
+	  console.timeEnd('[escope] handle boxed variables');
 
 	  if(asExpr) {
 	    // If evaluating as an expression, return the last value if it's
@@ -5233,12 +5321,14 @@
 	    b.blockStatement(nodes)
 	  );
 
+	  console.time('[traverse] outest')
 	  var rootFn = types.traverse(
 	    nodes,
 	    function(node) {
 	      return visitNode.call(this, node, [], debugInfo);
 	    }
 	  );
+	  console.timeEnd('[traverse] outest')
 
 	  if(asExpr) {
 	    rootFn = rootFn.body.body;
@@ -5426,7 +5516,7 @@
 	            b.memberExpression(b.identifier('VM'),
 	                               b.identifier('execute'),
 	                               false),
-	            [node.id, b.literal(null), b.thisExpression(), b.identifier('arguments')]
+	            [node.id, b.thisExpression(), b.identifier('arguments')] // only three args.
 	          )
 	        )
 	      )
@@ -5478,7 +5568,14 @@
 	        ),
 
 	        b.ifStatement(
-	          b.unaryExpression('!', em.getProperty('e', 'reuse')),
+	          // !e.reuser && $__next !== -1
+	          // if it has breakpoint in eval function, it cannot store the ($__next = -1) state
+	          b.logicalExpression (
+	            '&&',
+	            b.unaryExpression('!', em.getProperty('e', 'reuse')),
+	            b.binaryExpression('!==', b.identifier('$__next'), b.identifier('-1'))
+	          ),
+
 	          b.expressionStatement(
 	            b.callExpression(em.getProperty('e', 'pushFrame'), [
 	              b.newExpression(
@@ -5668,6 +5765,7 @@
 	  n.Function.assert(fun);
 	  var vars = {};
 	  var funDeclsToRaise = [];
+	  var isGlobal = fun.id.name === '$__global';
 
 	  function varDeclToExpr(vdec, includeIdentifiers) {
 	    n.VariableDeclaration.assert(vdec);
@@ -5676,12 +5774,16 @@
 	    vdec.declarations.forEach(function(dec) {
 	      vars[dec.id.name] = dec.id;
 
+	      // global variables should mount at window object.
+	      // It ensure work for multi separate scripts.
+	      var id = isGlobal ? b.memberExpression(b.identifier('window'), dec.id, false, dec.loc) : dec.id;
+
 	      if (dec.init) {
-	        var assn = b.assignmentExpression('=', dec.id, dec.init);
+	        var assn = b.assignmentExpression('=', id, dec.init);
 
 	        exprs.push(withLoc(assn, dec.loc));
 	      } else if (includeIdentifiers) {
-	        exprs.push(dec.id);
+	        exprs.push(id);
 	      }
 	    });
 
@@ -5739,7 +5841,9 @@
 	      var assignment = withLoc(b.expressionStatement(
 	        withLoc(b.assignmentExpression(
 	          "=",
-	          node.id,
+	          // global variables should mount at window object.
+	          // It ensure work for multi separate scripts.
+	          isGlobal ? b.memberExpression(b.identifier('window'), node.id, false, node.loc) : node.id,
 	          funcExpr
 	        ), node.loc)
 	      ), node.loc);
@@ -5795,7 +5899,7 @@
 	    }
 	  });
 
-	  if (declarations.length === 0) {
+	  if (declarations.length === 0 || isGlobal) {
 	    return null; // Be sure to handle this case!
 	  }
 
@@ -6021,6 +6125,10 @@
 
 	// Shorthand for an assignment statement.
 	Ep.assign = function(lhs, rhs, loc) {
+	  // return; expression will make rhs null
+	  if (rhs === null) {
+	    rhs = b.identifier("undefined");
+	  }
 	  var node = b.expressionStatement(
 	    b.assignmentExpression("=", lhs, rhs));
 	  node.loc = loc;
@@ -6120,6 +6228,9 @@
 	};
 
 	Ep.withTempVars = function(cb) {
+	  // do not release tempId, because if a cascade call expression's arguments
+	  // need compute, the cascade call and argument will use the same temp var.
+	  // It cause exception.
 	  // var prevId = this.tmpId;
 	  var res = cb();
 	  // this.tmpId = prevId;
@@ -6226,9 +6337,10 @@
 	          [self.vmProperty('evalArg')]
 	        )
 	      ),
-	      b.throwStatement(
-	        b.newExpression(b.identifier('$ContinuationExc'), [])
-	      )
+	      b.returnStatement(null)
+	      // b.throwStatement(
+	      //   b.newExpression(b.identifier('$ContinuationExc'), [])
+	      // )
 	    ])
 	  );
 
@@ -6466,7 +6578,9 @@
 	    break;
 
 	  case "ForInStatement":
-	    n.Identifier.assert(stmt.left);
+	    // by season
+	    // member expression is legal too.
+	    // n.Identifier.assert(stmt.left);
 
 	    var head = loc();
 	    var after = loc();
@@ -6617,19 +6731,25 @@
 
 	  case "ReturnStatement":
 	    var arg = path.get('argument');
+	    var tmp = null;
+	    var after = loc();
 
-	    var tmp = self.getTempVar();
-	      var after = loc();
-	    self.emitAssign(b.identifier('$__next'), after, arg.node.loc);
-	    self.emitAssign(
-	      tmp,
-	      this.explodeExpression(arg)
-	    );
-	    // TODO: breaking here allowing stepping to stop on return.
-	    // Not sure if that's desirable or not.
-	    // self.emit(b.breakStatement(), true);
-	    self.mark(after);
-	    self.releaseTempVar();
+	    if (arg.value) {
+	      var tmp = self.getTempVar();
+	      self.emitAssign(b.identifier('$__next'), after, arg.node.loc);
+	      self.emitAssign(
+	        tmp,
+	        this.explodeExpression(arg)
+	      );
+	      // TODO: breaking here allowing stepping to stop on return.
+	      // Not sure if that's desirable or not.
+	      // self.emit(b.breakStatement(), true);
+	      self.mark(after);
+	      self.releaseTempVar();
+	    } else {
+	      // self.emitAssign(b.identifier('$__next'), after, arg.node.loc);
+	      // self.mark(after);
+	    }
 
 	    self.emit(withLoc(b.returnStatement(tmp), path.node.loc));
 	    break;
@@ -6766,6 +6886,9 @@
 	    self.mark(after);
 	    break;
 
+	  case "EmptyStatement":
+	    break;
+
 	  default:
 	    throw new Error(
 	      "unknown Statement of type " +
@@ -6859,10 +6982,11 @@
 	  }
 
 	  function finish(expr) {
-	    expr.callee || expr.type === "NewExpression"
 	    n.Expression.assert(expr);
 	    if (ignoreResult) {
 	      var after = loc();
+	      // if a function call do before __next assignment,
+	      // and the function call has breakpoint, it will cause dead loop.
 	      if (includeCallExpr(expr)) {
 	        self.emitAssign(b.identifier('$__next'), after);
 	        self.emit(expr);
@@ -6887,6 +7011,8 @@
 	  // break statement), then any sibling subexpressions will almost
 	  // certainly have to be exploded in order to maintain the order of their
 	  // side effects relative to the leaping child(ren).
+
+	  // unuse.
 	  // var hasLeapingChildren = meta.containsLeap.onlyChildren(expr);
 
 	  // In order to save the rest of explodeExpression from a combinatorial
@@ -6963,6 +7089,16 @@
 	      oldCalleePath = path.get("arguments").get(0);
 	    }
 
+	    if (oldCalleePath.node.type === "Identifier" &&
+	        oldCalleePath.node.name === "eval") {
+	      oldCalleePath = new types.NodePath(
+	        withLoc(
+	          b.memberExpression(b.identifier("VM"), b.identifier("evaluate"), false, oldCalleePath.node.loc),
+	          oldCalleePath.node.loc
+	        )
+	      );
+	    }
+
 	    var newCallee = self.explodeExpression(oldCalleePath);
 
 	    var r = self.withTempVars(function() {
@@ -6989,6 +7125,8 @@
 	    // TODO: this should be the last major expression type I need to
 	    // fix up to be able to trace/step through. can't call native new
 	    return self.withTempVars(function() {
+	      // a pure new expression without any assignment
+	      // will cause exception that can not find node loc
 	      return finish(withLoc(b.newExpression(
 	        explodeViaTempVar(null, path.get("callee"), false, true),
 	        path.get("arguments").map(function(argPath) {
@@ -18542,70 +18680,6 @@
 /* 51 */
 /***/ function(module, exports, __webpack_require__) {
 
-	var types = __webpack_require__(9);
-	var recast = __webpack_require__(26);
-	var b = types.builders;
-
-	function DebugInfo() {
-	  this.baseId = 0;
-	  this.baseIndex = 1;
-	  this.machines = [];
-	  this.stepIds = [];
-	  this.stmts = [];
-	}
-
-	DebugInfo.prototype.makeId = function() {
-	  var id = this.baseId++;
-	  this.machines[id] = {
-	    locs: {},
-	    finalLoc: null
-	  };
-	  return id;
-	};
-
-	DebugInfo.prototype.addStepIds = function(machineId, ids) {
-	  this.stepIds[machineId] = ids;
-	}
-
-	DebugInfo.prototype.addSourceLocation = function(machineId, loc, index) {
-	  this.machines[machineId].locs[index] = loc;
-	  return index;
-	};
-
-	DebugInfo.prototype.getSourceLocation = function(machineId, index) {
-	  return this.machines[machineId].locs[index];
-	};
-
-	DebugInfo.prototype.addFinalLocation = function(machineId, loc) {
-	  this.machines[machineId].finalLoc = loc;
-	};
-
-	DebugInfo.prototype.getDebugAST = function() {
-	  const ast = recast.parse('(' + JSON.stringify(
-	    { machines: this.machines,
-	      stepIds: this.stepIds }
-	  ) + ')');
-
-	  return b.variableDeclaration(
-	    'var',
-	    [b.variableDeclarator(
-	      b.identifier('__debugInfo'),
-	      ast.program.body[0].expression)]
-	  );
-	};
-
-	DebugInfo.prototype.getDebugInfo = function() {
-	  return { machines: this.machines,
-	           stepIds: this.stepIds };
-	};
-
-	exports.DebugInfo = DebugInfo;
-
-
-/***/ },
-/* 52 */
-/***/ function(module, exports, __webpack_require__) {
-
 	var __WEBPACK_AMD_DEFINE_ARRAY__, __WEBPACK_AMD_DEFINE_RESULT__;/*
 	  Copyright (C) 2012-2013 Yusuke Suzuki <utatane.tea@gmail.com>
 	  Copyright (C) 2013 Alex Seville <hi@alexanderseville.com>
@@ -18675,7 +18749,7 @@
 	    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js,
 	    // and plain browser loading,
 	    if (true) {
-	        !(__WEBPACK_AMD_DEFINE_ARRAY__ = [exports, __webpack_require__(53)], __WEBPACK_AMD_DEFINE_RESULT__ = function (exports, estraverse) {
+	        !(__WEBPACK_AMD_DEFINE_ARRAY__ = [exports, __webpack_require__(52)], __WEBPACK_AMD_DEFINE_RESULT__ = function (exports, estraverse) {
 	            factory(exports, global, estraverse);
 	        }.apply(exports, __WEBPACK_AMD_DEFINE_ARRAY__), __WEBPACK_AMD_DEFINE_RESULT__ !== undefined && (module.exports = __WEBPACK_AMD_DEFINE_RESULT__));
 	    } else if (typeof exports !== 'undefined') {
@@ -19731,7 +19805,7 @@
 
 
 /***/ },
-/* 53 */
+/* 52 */
 /***/ function(module, exports) {
 
 	/*
@@ -20573,6 +20647,70 @@
 	    return exports;
 	}(exports));
 	/* vim: set sw=4 ts=4 et tw=80 : */
+
+
+/***/ },
+/* 53 */
+/***/ function(module, exports, __webpack_require__) {
+
+	var types = __webpack_require__(9);
+	var recast = __webpack_require__(26);
+	var b = types.builders;
+
+	function DebugInfo() {
+	  this.baseId = 0;
+	  this.baseIndex = 1;
+	  this.machines = [];
+	  this.stepIds = [];
+	  this.stmts = [];
+	}
+
+	DebugInfo.prototype.makeId = function() {
+	  var id = this.baseId++;
+	  this.machines[id] = {
+	    locs: {},
+	    finalLoc: null
+	  };
+	  return id;
+	};
+
+	DebugInfo.prototype.addStepIds = function(machineId, ids) {
+	  this.stepIds[machineId] = ids;
+	}
+
+	DebugInfo.prototype.addSourceLocation = function(machineId, loc, index) {
+	  this.machines[machineId].locs[index] = loc;
+	  return index;
+	};
+
+	DebugInfo.prototype.getSourceLocation = function(machineId, index) {
+	  return this.machines[machineId].locs[index];
+	};
+
+	DebugInfo.prototype.addFinalLocation = function(machineId, loc) {
+	  this.machines[machineId].finalLoc = loc;
+	};
+
+	DebugInfo.prototype.getDebugAST = function() {
+	  const ast = recast.parse('(' + JSON.stringify(
+	    { machines: this.machines,
+	      stepIds: this.stepIds }
+	  ) + ')');
+
+	  return b.variableDeclaration(
+	    'var',
+	    [b.variableDeclarator(
+	      b.identifier('__debugInfo'),
+	      ast.program.body[0].expression)]
+	  );
+	};
+
+	DebugInfo.prototype.getDebugInfo = function() {
+	  return { machines: this.machines,
+	           stepIds: this.stepIds };
+	};
+
+	exports.DebugInfo = DebugInfo;
 
 
 /***/ },
