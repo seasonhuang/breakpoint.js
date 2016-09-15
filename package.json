@@ -22,6 +22,6 @@
   },
   "homepage": "https://github.com/seasonhuang/breakpoint.js#readme",
   "dependencies": {
-    "unwinder": "https://github.com/jlongster/unwinder.git"
+    "unwinder": "https://github.com/seasonhuang/unwinder.git"
   }
 }
